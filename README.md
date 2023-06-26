@@ -19,14 +19,14 @@ If you find this code useful, please cite the paper:
 }
 ```
 
-## Example for Quick Start
+## Quick Start
 Estimate a Prism-RL model using synthetic observations in the Sioux Falls network.
 
 ```
 python run_estimation.py --rl True --prism True --n_samples 1 --test_ratio 0
 ```
 
-For validation, you need to split the data in more than one samples and set test ratio larger than zero.
+For validation, you need to split the data in more than one samples and set test ratio greater than zero.
 
 ```
 python run_estimation.py --rl True --prism True --n_samples 10 --test_ratio 0.2
