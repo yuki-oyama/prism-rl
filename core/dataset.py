@@ -2,18 +2,6 @@ import numpy as np
 import pandas as pd
 from copy import deepcopy
 
-mm_renames = {
-    'モニターID': 'monitor_id',
-    'ダイアリーID': 'trip_id',
-    '交通手段': 'mode',
-    'リンクID': 'link_id',
-    'リンク出発時刻': 'dep_time',
-    '所要時間(s)': 'dur_sec',
-    '速度(km/h)': 'speed_km_h',
-    'リンクコスト': 'link_cost',
-    'リンク長(m)': 'link_length'
-}
-
 def count_loops(obs):
     n_loops = {k:0 for k in obs.keys()}
     for k in obs.keys():
@@ -42,19 +30,14 @@ def reset_index(link_data, node_data, obs_data):
     link_data['to_'] = [node_idx[n] for n in to_nodes]
 
     if obs_data is not None:
-        # rename japanese to english
-        if 'モニターID' in obs_data.columns.values:
-            renamed_obs_data = obs_data.rename(columns=mm_renames)
-        else:
-            renamed_obs_data = obs_data
-
-        links = renamed_obs_data['link_id'].values
-        renamed_obs_data['link_id'] = [link_idx[l] for l in links]
-        return renamed_obs_data
+        links = obs_data['link_id'].values
+        obs_data['link_id'] = [link_idx[l] for l in links]
+        return obs_data
     else:
         return None
 
-def read_mm_results(obs_df, links, min_n_paths=1, n_samples=1, test_ratio=0., seed_=111):
+def read_mm_results(obs_df, links, min_n_paths=1, n_samples=1,
+                    test_ratio=0., seed_=111, isBootstrap=False):
     """reading map matching results and obtain samples
     Arguments:
         obs_df (pd.DataFrame): map matching 'link' file
@@ -67,10 +50,6 @@ def read_mm_results(obs_df, links, min_n_paths=1, n_samples=1, test_ratio=0., se
     # dummy link for destination (common among all destinations)
     d_dummy_link = max(list(links.keys())) + 1
 
-    # rename japanese to english
-    if 'モニターID' in obs_df.columns.values:
-        obs_df = obs_df.rename(columns=mm_renames)
-
     # obtain paths
     dests, obs = [], {}
     path, path_len = [], 0.
@@ -81,7 +60,7 @@ def read_mm_results(obs_df, links, min_n_paths=1, n_samples=1, test_ratio=0., se
         # trip change
         if trip_id != link['trip_id']:
             # do not record when n_links <= 1
-            if len(path) > 1 and path_len >= 100:
+            if len(path) > 1 and path_len >= 10:
                 d = links[path[-1]][1]
                 if d not in dests:
                     dests.append(d)
@@ -124,13 +103,24 @@ def read_mm_results(obs_df, links, min_n_paths=1, n_samples=1, test_ratio=0., se
     rawdf = pd.DataFrame({'d': obs_for_sampling[0], 'path': obs_for_sampling[1]})
     samples = []
     for i in range(n_samples):
-        train_df = rawdf.sample(frac=(1-test_ratio), random_state=seed_+i)
-        test_df = rawdf.drop(train_df.index)
-        if i == 0: print(f'n_trains is {len(train_df)}; n_tests is {len(test_df)}')
-        sample = {
-            'train': {d: np.array([path for path in train_df.query(f'd == {d}')['path']]).T for d in train_df['d'].unique()},
-            'test': {d: np.array([path for path in test_df.query(f'd == {d}')['path']]).T for d in test_df['d'].unique()},
-        }
+        if not isBootstrap:
+            train_df = rawdf.sample(frac=(1-test_ratio), random_state=seed_+i)
+            test_df = rawdf.drop(train_df.index)
+            if i == 0: print(f'n_trains is {len(train_df)}; n_tests is {len(test_df)}')
+            sample = {
+                'train': {d: np.array([path for path in train_df.query(f'd == {d}')['path']]).T for d in train_df['d'].unique()},
+                'test': {d: np.array([path for path in test_df.query(f'd == {d}')['path']]).T for d in test_df['d'].unique()},
+            }
+        else:
+            if i == 0:
+                train_df = rawdf.copy() # the first sample is the original sample
+                print(f'n_trains is {len(train_df)}; n_tests is {0}')
+            else:
+                train_df = rawdf.sample(frac=(1-test_ratio), random_state=seed_+i, replace=True)
+            sample = {
+                'train': {d: np.array([path for path in train_df.query(f'd == {d}')['path']]).T for d in train_df['d'].unique()},
+                'test': None
+            }
         samples.append(sample)
 
     # od data
@@ -143,21 +133,15 @@ def analyze_detour_rate(g, obs):
     g: graph object
     obs: observation dictionary with key being destination; value is list of paths
     """
-    L = len(g.links)
     min_steps = []
     obs_steps = []
     origins, dests = [], []
     paths, min_paths = [], []
-    # for d in g.dests:
-    for d, obs_paths in obs.items():
+    for d in g.dests:
         _, Dd, __, min_path_d = g._compute_minimum_steps(d=d, return_path=True)
-        # for path in obs[d]:
-        for path in obs_paths:
+        for path in obs[d]:
             min_steps.append(Dd[path[0]])
-            if type(path) == list:
-                obs_steps.append(len(path)-1)
-            elif type(path) == np.ndarray:
-                obs_steps.append(len(path)-np.sum(path == L))
+            obs_steps.append(len(path)-1)
             origins.append(path[0])
             dests.append(d)
             paths.append(path)
@@ -167,3 +151,21 @@ def analyze_detour_rate(g, obs):
         )
     detour_df['detour_rate'] = detour_df['obs_step']/detour_df['min_step']
     return detour_df
+
+def bootstrap_samples(obs_filled, n_samples, seed_=111):
+    obs_for_sampling = [[], []] # for bootstrapping
+    for d, paths in obs_filled.items():
+        for path in paths.T:
+            obs_for_sampling[0].append(d)
+            obs_for_sampling[1].append(path)
+
+    # sampling
+    rawdf = pd.DataFrame({'d': obs_for_sampling[0], 'path': obs_for_sampling[1]})
+    samples = []
+    for i in range(n_samples):
+        sample_df = rawdf.sample(frac=1, random_state=seed_+i, replace=True)
+        sample = {
+            d: np.array([path for path in sample_df.query(f'd == {d}')['path']]).T for d in sample_df['d'].unique()
+        }
+        samples.append(sample)
+    return samples

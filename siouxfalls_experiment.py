@@ -54,6 +54,36 @@ def callbackF(x):
     print(txt)
     Niter += 1
 
+def generate_data(config):
+    os = [1,2,3,4,5,6]
+    ds = [8,12,16,20]
+    observations_d = {}
+    N = config.n_obs
+    max_len = 0
+    for d in ds:
+        seq = rl.sample_path(os, d, N)
+        if seq.shape[0] >= max_len:
+            max_len = seq.shape[0]
+        observations_d[d] = seq
+    obs = {i:{} for i in range(config.n_samples)}
+
+    # multiple samples
+    if config.n_samples > 1 and config.state_key == 'd':
+        # define for each sample
+        sample_size = (N * len(os) * len(ds)) // config.n_samples
+        for i in range(config.n_samples):
+            d_counts = np.bincount(np.random.choice(ds, sample_size))
+            for d in ds:
+                idx_ = np.random.choice(np.arange(N * len(os)), d_counts[d], replace=False)
+                obs[i][d] = observations_d[d][:, idx_]
+    else:
+        obs[0] = observations_d
+
+    # loop counts
+    n_loops = count_loops(observations_d)
+    print(n_loops)
+    return obs, observations_d, max_len
+
 # %%
 if __name__ == '__main__':
     config, _ = get_config()
@@ -62,24 +92,26 @@ if __name__ == '__main__':
     _ = timer.stop()
 
     # networks
-    dir_ = 'data/network2/SiouxFalls/'
+    dir_ = 'data/network/SiouxFalls/'
     node_data = pd.read_csv(dir_+'node.csv')
     link_data = pd.read_csv(dir_+'link.csv')
     od_data = pd.read_csv(dir_+'od.csv')
+    node_data['node_id'] = node_data['fid']
+    link_data['link_id'] = link_data['fid']
+    link_data['from_'] = link_data['O']
+    link_data['to_'] = link_data['D']
     T = config.T
 
     # Graph
     g = Graph()
-    g.read_data(node_data=node_data, link_data=link_data, od_data=od_data, features=['Length ', 'capacity'])
+    g.read_data(node_data=node_data, link_data=link_data, od_data=od_data)
 
     # variables
-    x_free = list(g.link_features.values())
-    # x_free[1] /= 10000
-    x_free[1] /= x_free[1].max()
+    features = link_data.copy()
+    features['capacity'] /= features['capacity'].max()
     xs = {
-        'length': (x_free[0], 'link'),
-        'capacity': (x_free[1], 'link'),
-        'caplen': (x_free[1] * x_free[0], 'link'),
+        'length': (features['length'], 'link'),
+        'caplen': (features['length'] * features['capacity'], 'link'),
     }
 
     # true parameters & probtbility
@@ -103,40 +135,7 @@ if __name__ == '__main__':
     rl.eval_prob()
 
     ### Data Generation
-    # %%
-    os = [1,2,3,4,5,6]
-    ds = [8,12,16,20]
-    observations_d = {}
-    observations_od = {}
-    N = config.n_obs
-    max_len = 0
-    for d in ds:
-        seq = rl.sample_path(os, d, N)
-        if seq.shape[0] >= max_len:
-            max_len = seq.shape[0]
-        observations_d[d] = seq
-        # for od-specific
-        # for i, o in enumerate(os):
-        #     od_idx = g.ods.tolist().index([o,d])
-        #     observations_od[od_idx] = seq[:,(i*N):((i+1)*N)]
-    # obs = {'d': {}, 'od': observations_od}
-    obs = {i:{} for i in range(config.n_samples)} # currently 'od' is not yet implemented
-
-    # multiple samples
-    if config.n_samples > 1 and config.state_key == 'd':
-        # define for each sample
-        sample_size = (N * len(os) * len(ds)) // config.n_samples
-        for i in range(config.n_samples):
-            d_counts = np.bincount(np.random.choice(ds, sample_size))
-            for d in ds:
-                idx_ = np.random.choice(np.arange(N * len(os)), d_counts[d], replace=False)
-                obs[i][d] = observations_d[d][:, idx_]
-    else:
-        obs[0] = observations_d
-
-    # loop counts
-    n_loops = count_loops(observations_d)
-    print(n_loops)
+    obs, observations_d, max_len = generate_data(config)
 
     # %%
     ### Model Estimation
@@ -154,16 +153,13 @@ if __name__ == '__main__':
             'runtime': runtime,
         }
 
-    # %%
+    ## Estimation
     for i in range(config.n_samples):
-        # %%
         if config.rl:
-            # %%
             rl.beta = np.array(config.init_beta)
             LL0_rl = rl.calc_likelihood(observations=obs[i])
             print('RL model initial log likelihood:', LL0_rl)
 
-            # %%
             try:
                 print(f"RL model estimation for sample {i}...")
                 timer.start()
@@ -176,7 +172,6 @@ if __name__ == '__main__':
             except:
                 print(f'RL failed for sample {i}')
 
-        # %%
         if config.prism:
             print("Update network data for prism RL...")
             T = config.T if config.T >= max_len else max_len
@@ -198,7 +193,6 @@ if __name__ == '__main__':
 
             print(f"Prism RL model estimation for sample {i}...")
             if not config.parallel:
-                # %%
                 timer.start()
                 results = prism.estimate(observations=observations, method='L-BFGS-B', disp=False, hess='res')
                 prism_time = timer.stop()
@@ -244,3 +238,31 @@ if __name__ == '__main__':
         df_prism = pd.DataFrame(outputs['PrismRL']).T
         print(df_prism)
         df_prism.to_csv(f'results/reproducibility/PrismRL_{config.version}.csv', index=True)
+
+
+##### Generate synthetic data (since real data cannot be publicly shared) #####
+
+# idx_to_id = {idx_:id_ for idx_, id_ in zip(link_data.index.values, link_data['link_id'])}
+# idx_to_len = {idx_:len_ for idx_, len_ in zip(link_data.index.values, link_data['length'])}
+#
+# # %%
+# synthetic = []
+# trip_id = 1
+# for d in observations_d.keys():
+#     paths = observations_d[d].T
+#     for k in range(paths.shape[0]):
+#         if np.random.rand() > 0.2:
+#             continue
+#         path = paths[k]
+#         for link in path:
+#             if link not in idx_to_id.keys():
+#                 break
+#             else:
+#                 link_id = idx_to_id[link]
+#                 link_len = idx_to_len[link]
+#                 synthetic.append({'trip_id': trip_id, 'link_id': link_id, 'link_len': link_len})
+#         trip_id += 1
+#
+# # %%
+# df = pd.DataFrame(synthetic)
+# df.to_csv('synthetic_data.csv', index=False)
