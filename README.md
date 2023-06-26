@@ -26,7 +26,7 @@ Estimate a Prism-RL model using synthetic observations in the Sioux Falls networ
 python run_estimation.py --rl True --prism True --n_samples 1 --test_ratio 0
 ```
 
-For validation, you need to split the data in more than one samples and set test ratio greater than zero.
+For cross-validation, split the data into estimation and validation samples by setting test ratio greater than zero.
 
 ```
 python run_estimation.py --rl True --prism True --n_samples 10 --test_ratio 0.2
